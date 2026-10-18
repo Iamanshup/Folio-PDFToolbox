@@ -22,6 +22,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         NSApp.setActivationPolicy(.regular)
+        // The automatic title bar separator is drawn at the wrong height in the sidebar (through the
+        // window buttons) once the sidebar list scrolls, so turn it off for every window.
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
+            (note.object as? NSWindow)?.titlebarSeparatorStyle = .none
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
