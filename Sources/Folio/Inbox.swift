@@ -51,8 +51,7 @@ final class ToolPrefs: ObservableObject {
     func toggleFavorite(_ t: Tool) { if isFavorite(t) { favorites.removeAll { $0 == t } } else { favorites.append(t) } }
     func used(_ t: Tool) { recents = Array(([t] + recents.filter { $0 != t }).prefix(6)) }
 
-    func isExpanded(_ c: ToolCategory) -> Binding<Bool> {
-        Binding(get: { self.expanded.contains(c.rawValue) },
-                set: { if $0 { self.expanded.insert(c.rawValue) } else { self.expanded.remove(c.rawValue) } })
+    func toggleExpanded(_ c: ToolCategory) {
+        if expanded.contains(c.rawValue) { expanded.remove(c.rawValue) } else { expanded.insert(c.rawValue) }
     }
 }

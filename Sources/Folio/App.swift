@@ -39,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
             (note.object as? NSWindow)?.titlebarSeparatorStyle = .none
         }
+        UITestHook.start()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -69,14 +70,29 @@ struct ContentView: View {
                 if !prefs.favorites.isEmpty {
                     Section("Favorites") { ForEach(prefs.favorites) { row($0) } }
                 }
-                let recent = prefs.recents.filter { !prefs.isFavorite($0) }.prefix(4)
-                if !recent.isEmpty {
-                    Section("Recent") { ForEach(Array(recent)) { row($0) } }
-                }
+                // No "Recent" section here: it reorders on every click, which moved rows under the
+                // pointer so the next click hit the wrong tool. Recent tools live on the home screen.
                 ForEach(ToolCategory.allCases) { cat in
-                    Section(isExpanded: prefs.isExpanded(cat)) {
-                        ForEach(Tool.allCases.filter { $0.category == cat }) { row($0) }
-                    } header: { Text(cat.rawValue) }
+                    // A plain section with a clickable header: the system's collapsible sections only
+                    // expand via a hover-only arrow, so clicking the category name did nothing.
+                    let open = prefs.expanded.contains(cat.rawValue)
+                    Section {
+                        if open { ForEach(Tool.allCases.filter { $0.category == cat }) { row($0) } }
+                    } header: {
+                        Button { withAnimation(.easeInOut(duration: 0.15)) { prefs.toggleExpanded(cat) } } label: {
+                            HStack {
+                                Text(cat.rawValue)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .rotationEffect(.degrees(open ? 90 : 0))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(cat.rawValue), \(open ? "expanded" : "collapsed")")
+                        .accessibilityHint(open ? "Collapses this category" : "Shows the tools in this category")
+                    }
                 }
             }
             .navigationSplitViewColumnWidth(min: 210, ideal: 230)
