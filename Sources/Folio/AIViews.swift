@@ -22,6 +22,9 @@ enum Summarizer {
     enum Style: String, CaseIterable, Identifiable { case bullets = "Bullet points", paragraph = "Paragraphs"; var id: String { rawValue } }
 
     static var availability: (ok: Bool, reason: String) {
+        guard #available(macOS 26, *) else {
+            return (false, "Apple Intelligence summaries need macOS 26 — using the built-in extractive summarizer.")
+        }
         switch SystemLanguageModel.default.availability {
         case .available: return (true, "Using on-device Apple Intelligence.")
         case .unavailable(.appleIntelligenceNotEnabled): return (false, "Apple Intelligence is turned off — using the built-in extractive summarizer. Turn it on in System Settings for AI summaries.")
@@ -47,7 +50,12 @@ enum Summarizer {
     static func summarize(_ text: String, length: Length, style: Style, progress: @escaping (String) -> Void) async throws -> String {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard clean.count > 40 else { throw ToolError.message("There isn’t enough text to summarize.") }
-        guard availability.ok else { return extractive(clean, sentences: length.sentences, style: style) }
+        guard #available(macOS 26, *), availability.ok else { return extractive(clean, sentences: length.sentences, style: style) }
+        return await aiSummary(clean, length: length, style: style, progress: progress)
+    }
+
+    @available(macOS 26, *)
+    private static func aiSummary(_ clean: String, length: Length, style: Style, progress: @escaping (String) -> Void) async -> String {
         let format = style == .bullets ? "Use a Markdown bullet list." : "Write well-structured prose paragraphs."
         let instructions = "You are an expert editor who writes accurate, concise summaries. Only use facts from the provided text. Do not add commentary."
         var parts = chunks(clean)

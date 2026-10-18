@@ -16,7 +16,7 @@ Download the latest `Folio-x.y.z.dmg` from [Releases](https://github.com/Iamansh
 
 > Folio isn't notarized by Apple. The first time you open it, macOS will say it "could not verify" Folio: click **Done**, then open **System Settings › Privacy & Security** and click **Open Anyway**. This is needed once.
 
-**Requirements:** macOS 26 (Tahoe) or later on Apple silicon.
+**Requirements:** macOS 15 (Sequoia) or later on Apple silicon. AI summaries use Apple Intelligence on macOS 26 and later; on macOS 15 the summarizer uses its built-in offline method.
 
 ## Tools
 

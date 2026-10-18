@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "Folio-PDFToolbox",
-    platforms: [.macOS(.v26)],
+    platforms: [.macOS(.v15)],
     targets: [
         .executableTarget(
             name: "Folio",
