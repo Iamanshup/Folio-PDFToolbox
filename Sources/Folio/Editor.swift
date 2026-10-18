@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Model
 
@@ -54,6 +55,23 @@ enum EditorTool: Hashable, Identifiable {
         }
     }
 
+    /// Single-key shortcut on the canvas.
+    var shortcut: Character? {
+        switch self {
+        case .select: return "v"
+        case .text: return "t"
+        case .image: return "i"
+        case .rect: return "r"
+        case .ellipse: return "o"
+        case .line: return "l"
+        case .ink: return "d"
+        case .highlight: return "h"
+        case .whiteout: return "w"
+        case .redact: return "x"
+        case .field: return nil
+        }
+    }
+
     var kind: ItemKind? {
         switch self {
         case .select: return nil
@@ -100,8 +118,12 @@ struct CanvasItem: Identifiable, Equatable {
 final class CanvasModel: ObservableObject {
     let doc: PDFDocument
     let url: URL
-    @Published var items: [CanvasItem] = []
+    @Published var items: [CanvasItem] = [] { didSet { recordUndo(from: oldValue) } }
     @Published var selection: UUID?
+    /// 1 = page fits the canvas.
+    @Published var zoom: CGFloat = 1
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
     @Published var tool: EditorTool = .select
     @Published var page = 0
     @Published var pendingImage: NSImage?
@@ -115,6 +137,14 @@ final class CanvasModel: ObservableObject {
 
     private var cache: [Int: NSImage] = [:]
     private var fieldCounter = 0
+
+    // Undo history: snapshots of `items`.
+    private var undoStack: [[CanvasItem]] = []
+    private var redoStack: [[CanvasItem]] = []
+    private var restoring = false
+    private var gestureSnapshot: [CanvasItem]?
+    private var lastRecord = Date.distantPast
+    private var lastChangedID: UUID?
 
     init(doc: PDFDocument, url: URL) {
         self.doc = doc
@@ -152,6 +182,87 @@ final class CanvasModel: ObservableObject {
         items.removeAll { $0.id == selection }
         selection = nil
     }
+
+    func duplicateSelection() {
+        guard let i = selectedIndex else { return }
+        var c = items[i]
+        c.id = UUID()
+        c.rect = c.rect.offsetBy(dx: 12, dy: 12)
+        add(c)
+    }
+
+    func nudgeSelection(dx: CGFloat, dy: CGFloat) {
+        guard let id = selection else { return }
+        update(id) { $0.rect = $0.rect.offsetBy(dx: dx, dy: dy) }
+    }
+
+    // MARK: Undo
+
+    /// Called before a drag/resize/draw so the whole gesture becomes one undo step.
+    func beginGesture() { gestureSnapshot = items }
+
+    func endGesture() {
+        guard let before = gestureSnapshot else { return }
+        gestureSnapshot = nil
+        if before != items { push(before); lastChangedID = nil }
+    }
+
+    private func recordUndo(from old: [CanvasItem]) {
+        guard !restoring, gestureSnapshot == nil, old != items else { return }
+        // Coalesce rapid edits to one item (typing in the inspector, steppers, arrow-key nudges).
+        let changed = singleChangedID(old, items)
+        if let changed, changed == lastChangedID, Date().timeIntervalSince(lastRecord) < 1 {
+            lastRecord = Date()
+            return
+        }
+        push(old)
+        lastChangedID = changed
+        lastRecord = Date()
+    }
+
+    private func singleChangedID(_ a: [CanvasItem], _ b: [CanvasItem]) -> UUID? {
+        guard a.count == b.count else { return nil }
+        let diffs = zip(a, b).filter { $0 != $1 }
+        guard diffs.count == 1, diffs[0].0.id == diffs[0].1.id else { return nil }
+        return diffs[0].0.id
+    }
+
+    private func push(_ snapshot: [CanvasItem]) {
+        undoStack.append(snapshot)
+        if undoStack.count > 200 { undoStack.removeFirst() }
+        redoStack = []
+        updateUndoState()
+    }
+
+    func undo() {
+        guard let prev = undoStack.popLast() else { return }
+        redoStack.append(items)
+        restore(prev)
+    }
+
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        undoStack.append(items)
+        restore(next)
+    }
+
+    private func restore(_ snapshot: [CanvasItem]) {
+        restoring = true
+        items = snapshot
+        restoring = false
+        lastChangedID = nil
+        if let s = selection, !items.contains(where: { $0.id == s }) { selection = nil }
+        updateUndoState()
+    }
+
+    private func updateUndoState() {
+        canUndo = !undoStack.isEmpty
+        canRedo = !redoStack.isEmpty
+    }
+
+    // MARK: Zoom
+
+    func zoom(by factor: CGFloat) { zoom = min(8, max(0.5, zoom * factor)) }
 
     func hit(_ p: CGPoint, scale: CGFloat) -> CanvasItem? {
         let pad = 6 / scale
@@ -335,7 +446,10 @@ struct ItemView: View {
 
 struct PageCanvasView: View {
     @ObservedObject var model: CanvasModel
+    var tools: [EditorTool] = []
     var onDoubleClickText: ((UUID) -> Void)? = nil
+    @FocusState private var focused: Bool
+    @Local private var pinchBase: CGFloat?
 
     enum DragMode { case none, create(CGPoint), move(UUID, CGRect), resize(UUID, CGRect, CGFloat), ink([CGPoint]) }
 
@@ -346,8 +460,10 @@ struct PageCanvasView: View {
     var body: some View {
         GeometryReader { geo in
             let size = model.pageSize(model.page)
-            let scale = max(0.05, min((geo.size.width - 48) / size.width, (geo.size.height - 48) / size.height))
+            let fit = max(0.05, min((geo.size.width - 48) / size.width, (geo.size.height - 48) / size.height))
+            let scale = fit * model.zoom
             let disp = CGSize(width: size.width * scale, height: size.height * scale)
+            ScrollView([.horizontal, .vertical]) {
             ZStack(alignment: .topLeading) {
                 Image(nsImage: model.image(model.page)).resizable().frame(width: disp.width, height: disp.height)
                 ForEach(model.items.filter { $0.page == model.page }) { item in
@@ -362,11 +478,52 @@ struct PageCanvasView: View {
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { changed($0, scale: scale, size: size) }
                 .onEnded { ended($0, scale: scale) })
+            .simultaneousGesture(MagnifyGesture()
+                .onChanged { v in
+                    if pinchBase == nil { pinchBase = model.zoom }
+                    model.zoom = min(8, max(0.5, (pinchBase ?? 1) * v.magnification))
+                }
+                .onEnded { _ in pinchBase = nil })
             .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
-            .frame(width: geo.size.width, height: geo.size.height)
+            .padding(24)
+            .frame(minWidth: geo.size.width, minHeight: geo.size.height)
+            }
         }
         .background(Color(nsColor: .underPageBackgroundColor))
-        .onDeleteCommand { model.deleteSelection() }
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(phases: [.down, .repeat]) { handleKey($0) }
+        .onAppear { focused = true }
+        .accessibilityLabel("Page \(model.page + 1) canvas")
+    }
+
+    private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        let step: CGFloat = press.modifiers.contains(.shift) ? 10 : 1
+        let hasSelection = model.selectedIndex != nil
+        switch press.key {
+        case .leftArrow:
+            if hasSelection { model.nudgeSelection(dx: -step, dy: 0) } else { model.page = max(0, model.page - 1) }
+        case .rightArrow:
+            if hasSelection { model.nudgeSelection(dx: step, dy: 0) } else { model.page = min(model.pageCount - 1, model.page + 1) }
+        case .upArrow:
+            guard hasSelection else { return .ignored }
+            model.nudgeSelection(dx: 0, dy: -step)
+        case .downArrow:
+            guard hasSelection else { return .ignored }
+            model.nudgeSelection(dx: 0, dy: step)
+        case .delete, .deleteForward:
+            guard hasSelection else { return .ignored }
+            model.deleteSelection()
+        case .escape:
+            model.selection = nil
+            model.tool = .select
+        default:
+            guard press.modifiers.subtracting(.shift).isEmpty, let c = press.characters.lowercased().first,
+                  let t = tools.first(where: { $0.shortcut == c }) else { return .ignored }
+            model.tool = t
+        }
+        return .handled
     }
 
     private func pt(_ p: CGPoint, _ scale: CGFloat) -> CGPoint { CGPoint(x: p.x / scale, y: p.y / scale) }
@@ -374,6 +531,7 @@ struct PageCanvasView: View {
     private func changed(_ v: DragGesture.Value, scale: CGFloat, size: CGSize) {
         let p = pt(v.location, scale), s = pt(v.startLocation, scale)
         if drag == nil {
+            model.beginGesture()
             switch model.tool {
             case .select:
                 if let i = model.selectedIndex, model.items[i].page == model.page {
@@ -450,6 +608,8 @@ struct PageCanvasView: View {
         }
         drag = nil
         draft = nil
+        model.endGesture()
+        focused = true
     }
 }
 
@@ -464,7 +624,7 @@ struct PageThumbnails: View {
                     ForEach(0..<model.pageCount, id: \.self) { i in
                         VStack(spacing: 4) {
                             Image(nsImage: model.image(i)).resizable().scaledToFit()
-                                .frame(maxWidth: 96, maxHeight: 120)
+                                .frame(maxWidth: 84, maxHeight: 108)
                                 .overlay(Rectangle().strokeBorder(i == model.page ? Color.accentColor : Color.secondary.opacity(0.3), lineWidth: i == model.page ? 3 : 1))
                                 .overlay(alignment: .topTrailing) {
                                     let n = model.items.filter { $0.page == i }.count
@@ -480,7 +640,7 @@ struct PageThumbnails: View {
             }
             .onChange(of: model.page) { proxy.scrollTo(model.page) }
         }
-        .frame(width: 124)
+        .frame(width: 112)
         .background(Color(nsColor: .controlBackgroundColor))
     }
 }
@@ -489,20 +649,71 @@ struct ToolPalette: View {
     @ObservedObject var model: CanvasModel
     let tools: [EditorTool]
     var body: some View {
+        // Labeled when there's room, icons only when tighter, scrolling as a last resort.
+        ViewThatFits(in: .horizontal) {
+            row(labels: true)
+            row(labels: false)
+            ScrollView(.horizontal, showsIndicators: false) { row(labels: false) }
+        }
+    }
+
+    private func row(labels: Bool) -> some View {
         HStack(spacing: 2) {
             ForEach(tools) { t in
-                Button { model.tool = t } label: {
+                Button { select(t) } label: {
                     VStack(spacing: 2) {
                         Image(systemName: t.symbol).font(.system(size: 15)).frame(height: 18)
-                        Text(t.label).font(.system(size: 10))
+                        if labels { Text(t.label).font(.system(size: 10)).fixedSize() }
                     }
-                    .frame(minWidth: 58).padding(.vertical, 5)
+                    .frame(minWidth: labels ? 58 : 32, minHeight: 30).padding(.vertical, labels ? 5 : 2)
                     .background(RoundedRectangle(cornerRadius: 7).fill(model.tool == t ? Color.accentColor.opacity(0.2) : .clear))
                     .foregroundStyle(model.tool == t ? Color.accentColor : .primary)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(t.shortcut.map { "\(t.label) (\(String($0).uppercased()))" } ?? t.label)
+                .accessibilityLabel(t.label)
+                .accessibilityAddTraits(model.tool == t ? .isSelected : [])
             }
         }
+        .fixedSize()
+    }
+
+    /// Choosing the Image tool without an image (or choosing it again) asks for an image file.
+    private func select(_ t: EditorTool) {
+        if t == .image, model.pendingImage == nil || model.tool == .image {
+            guard let u = FilePicker.open(types: UTType.imageTypes, multiple: false)?.first, let img = NSImage(contentsOf: u) else { return }
+            model.pendingImage = img
+        }
+        model.tool = t
+    }
+}
+
+/// Undo/redo, zoom and page navigation under the canvas.
+struct EditorStatusBar: View {
+    @ObservedObject var model: CanvasModel
+    var body: some View {
+        HStack(spacing: 14) {
+            HStack(spacing: 4) {
+                Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .keyboardShortcut("z", modifiers: .command).disabled(!model.canUndo).help("Undo (⌘Z)")
+                Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .keyboardShortcut("z", modifiers: [.command, .shift]).disabled(!model.canRedo).help("Redo (⇧⌘Z)")
+            }
+            Spacer()
+            HStack(spacing: 4) {
+                Button { model.zoom(by: 1 / 1.25) } label: { Image(systemName: "minus.magnifyingglass") }
+                    .keyboardShortcut("-", modifiers: .command).help("Zoom Out (⌘−)")
+                Button { model.zoom = 1 } label: { Text(model.zoom == 1 ? "Fit" : "\(Int((model.zoom * 100).rounded()))%").monospacedDigit().frame(minWidth: 44) }
+                    .keyboardShortcut("0", modifiers: .command).help("Zoom to Fit (⌘0)")
+                Button { model.zoom(by: 1.25) } label: { Image(systemName: "plus.magnifyingglass") }
+                    .keyboardShortcut("=", modifiers: .command).help("Zoom In (⌘=)")
+            }
+            Spacer()
+            PageNavigator(model: model)
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12).padding(.vertical, 5)
     }
 }
 
@@ -568,7 +779,8 @@ struct ItemInspector: View {
                     }
                 }
                 HStack {
-                    Button { duplicate(item) } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+                    Button { model.duplicateSelection() } label: { Label("Duplicate", systemImage: "plus.square.on.square") }
+                        .keyboardShortcut("d", modifiers: .command)
                     Spacer()
                     Button(role: .destructive) { model.deleteSelection() } label: { Label("Delete", systemImage: "trash") }
                 }
@@ -619,13 +831,6 @@ struct ItemInspector: View {
         })
     }
 
-    private func duplicate(_ item: CanvasItem) {
-        var c = item
-        c.id = UUID()
-        c.rect = c.rect.offsetBy(dx: 12, dy: 12)
-        model.add(c)
-    }
-
     private func copyToAllPages(_ item: CanvasItem) {
         for p in 0..<model.pageCount where p != item.page {
             var c = item
@@ -653,11 +858,12 @@ struct CanvasEditor<Extra: View, Side: View>: View {
                     ToolPalette(model: model, tools: tools)
                     toolbarExtra
                     Spacer()
-                    PageNavigator(model: model)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 Divider()
-                PageCanvasView(model: model, onDoubleClickText: { id in model.selection = id; editingText = id })
+                PageCanvasView(model: model, tools: tools, onDoubleClickText: { id in model.selection = id; editingText = id })
+                Divider()
+                EditorStatusBar(model: model)
             }
             Divider()
             ScrollView {
@@ -668,7 +874,7 @@ struct CanvasEditor<Extra: View, Side: View>: View {
                 }
                 .padding(14)
             }
-            .frame(width: 270)
+            .frame(width: 248)
             .background(Color(nsColor: .windowBackgroundColor))
         }
     }
@@ -697,7 +903,7 @@ struct EditorHost<Editor: View>: View {
                         Text(model.url.lastPathComponent).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Button("Close File") { self.model = nil; runner.reset() }
-                        Button { if let job = makeJob(model) { runner.run(job) } } label: {
+                        Button { if let job = makeJob(model) { runner.run(job, source: model.url, label: tool.title) } } label: {
                             Label(actionTitle, systemImage: "square.and.arrow.down.fill").padding(.horizontal, 8)
                         }
                         .buttonStyle(.borderedProminent).disabled(runner.isRunning)
@@ -734,7 +940,7 @@ struct EditorHost<Editor: View>: View {
                     }
                     if let e = runner.error { Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
                 }
-                .onAppear { if let p = ProcessInfo.processInfo.environment["FOLIO_OPEN"] { load(URL(fileURLWithPath: p)) } }
+                .onAppear { if let f = FileInbox.shared.take([.pdf]).first { load(f) } }
             }
         }
     }

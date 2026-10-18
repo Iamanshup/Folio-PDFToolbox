@@ -28,6 +28,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>Folio uses Pages, Keynote and Numbers to convert Office documents to PDF.</string>
   <key>NSCameraUsageDescription</key><string>Folio uses Continuity Camera to scan documents.</string>
+  <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>Documents</string>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+    <key>LSItemContentTypes</key><array><string>com.adobe.pdf</string><string>public.image</string><string>org.openxmlformats.wordprocessingml.document</string><string>com.microsoft.word.doc</string><string>public.rtf</string><string>org.oasis-open.opendocument.text</string><string>org.openxmlformats.presentationml.presentation</string><string>com.microsoft.powerpoint.ppt</string><string>org.openxmlformats.spreadsheetml.sheet</string><string>com.microsoft.excel.xls</string><string>public.comma-separated-values-text</string><string>public.html</string></array>
+  </dict></array>
 </dict></plist>
 PLIST
 codesign --force --deep --sign - "$APP"

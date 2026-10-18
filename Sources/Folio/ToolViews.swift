@@ -37,6 +37,11 @@ struct SplitTool: View {
                 TextField("Pages to extract, e.g. 1, 3, 5-8", text: $ranges).textFieldStyle(.roundedBorder)
                 Toggle("Merge extracted pages into one PDF", isOn: $merge)
             }
+            let merged = merge && (mode == .customRanges || mode == .extractSelected)
+            let groups = try? PDFOps.splitGroups(mode: mode, ranges: ranges, every: every, mergeOutput: merged, pageCount: count)
+            PageGrid(url: files[0], groups: groups ?? [],
+                     caption: groups.map { "Preview: \($0.count) output file\($0.count == 1 ? "" : "s"). Colors and badges show which file each page goes into." }
+                        ?? "Fix the page ranges above to see the preview.")
         }, makeJob: { files in
             let (m, r, e) = (mode, ranges, every)
             let g = merge && (mode == .customRanges || mode == .extractSelected)
@@ -186,6 +191,7 @@ struct HTMLToPDFTool: View {
                 }
                 if let file { HStack { FileRow(url: file); Button("Remove") { self.file = nil } } }
             }
+            .onAppear { if let f = FileInbox.shared.take([.html]).first { file = f } }
             OptionsBox {
                 Picker("Paper", selection: $paper) { ForEach(WebPDF.Paper.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 300)
                 Toggle("Landscape", isOn: $landscape)
@@ -209,13 +215,13 @@ struct HTMLToPDFTool: View {
             target = u
         }
         let (u, p, l, m, w) = (target!, paper, landscape, CGFloat(margin), CGFloat(width))
-        runner.run { dir, prog in
+        runner.run({ dir, prog in
             prog.update("Loading \(u.host ?? u.lastPathComponent)…")
             let name = u.isFileURL ? u.baseName : (u.host ?? "webpage").replacingOccurrences(of: "www.", with: "")
             let dest = Workspace.uniqueURL(in: dir, name: name, ext: "pdf")
             try await WebPDF.render(url: u, baseURL: nil, out: dest, paper: p, landscape: l, margin: m, screenWidth: w)
             return ToolResult(files: [dest])
-        }
+        }, source: u.isFileURL ? u : nil, label: Tool.htmlToPDF.title)
     }
 }
 
@@ -335,7 +341,7 @@ struct RotateTool: View {
     @Local private var degrees = 90
     @Local private var ranges = ""
     var body: some View {
-        FileToolView(tool: .rotate, prompt: "Select PDF files to rotate", actionTitle: "Rotate PDF", options: { _ in
+        FileToolView(tool: .rotate, prompt: "Select PDF files to rotate", actionTitle: "Rotate PDF", options: { files in
             Picker("Rotation", selection: $degrees) {
                 Label("Left 90°", systemImage: "rotate.left").tag(270)
                 Label("180°", systemImage: "arrow.uturn.down").tag(180)
@@ -344,6 +350,11 @@ struct RotateTool: View {
             .pickerStyle(.segmented).frame(maxWidth: 380)
             TextField("Pages (leave empty for all), e.g. 1, 3-5", text: $ranges).textFieldStyle(.roundedBorder).frame(maxWidth: 380)
             Text("To rotate individual pages visually, use Organize PDF.").font(.caption).foregroundStyle(.secondary)
+            let count = PDFDocument(url: files[0])?.pageCount ?? 0
+            let targets = ranges.trimmingCharacters(in: .whitespaces).isEmpty ? Array(0..<count)
+                : ((try? PDFCore.parseRanges(ranges, pageCount: count))?.flatMap { $0 } ?? [])
+            PageGrid(url: files[0], rotations: Dictionary(targets.map { ($0, degrees == 270 ? -90 : degrees) }, uniquingKeysWith: { a, _ in a }),
+                     caption: files.count > 1 ? "Preview of \(files[0].lastPathComponent) (the same rotation applies to all \(files.count) files)" : "Preview")
         }, makeJob: { files in
             let (d, r) = (degrees, ranges)
             return { dir, _ in try PDFOps.rotate(files, degrees: d, ranges: r, out: dir) }

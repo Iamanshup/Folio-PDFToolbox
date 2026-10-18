@@ -30,6 +30,14 @@ Download the latest `Folio-x.y.z.dmg` from [Releases](https://github.com/Iamansh
 | **Security** | Unlock · Protect (password + permissions) · Sign (draw, type or upload; signatures are saved) · Redact (search, patterns like emails/phones/cards, true removal) · Compare (text diff + visual overlay) |
 | **Intelligence** | AI Summarizer (on-device Apple Intelligence, with an offline fallback) · Translate PDF (on-device, keeps the layout or exports .docx) |
 
+### Working with Folio
+
+- **Open files any way you like:** drag them onto a tool, use **File › Open…** (⌘O), drop them on the Dock icon, or choose **Open With › Folio** in Finder. Folio then suggests the tools that accept them.
+- **Results save automatically**, next to the original file by default. Choose Downloads, a fixed folder, or "Ask each time" in **Folio › Settings** (⌘,). Jobs that create many files get their own folder.
+- **Previews:** file lists show page thumbnails; Split shows which pages go into each output file, and Rotate previews the result.
+- **Editors** (Edit, Sign, Redact, Forms) support undo/redo (⌘Z / ⇧⌘Z), zoom (⌘= / ⌘- / ⌘0 or pinch) and keyboard shortcuts: Delete, arrow keys to nudge (Shift for 10 pt), Esc, ⌘D to duplicate, and V T I R O L D H W X to switch tools.
+- **Favorites and Recent:** star a tool (or right-click it) to pin it to the top of the sidebar and home screen.
+
 ### How it works
 
 Folio is built entirely on Apple frameworks — no third-party dependencies:
@@ -53,7 +61,7 @@ cd Folio-PDFToolbox
 
 ### Self-test
 
-A headless suite runs 51 end-to-end checks over generated documents for every engine:
+A headless suite runs 59 end-to-end checks over generated documents for every engine:
 
 ```sh
 swift build && .build/debug/Folio --selftest /tmp

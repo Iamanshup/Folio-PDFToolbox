@@ -20,11 +20,15 @@ enum Workspace {
     }
 
     static func uniqueURL(in dir: URL, name: String, ext: String) -> URL {
-        let safe = name.replacingOccurrences(of: "/", with: "-")
-        var url = dir.appendingPathComponent(safe).appendingPathExtension(ext)
+        let safe = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        func make(_ n: String) -> URL {
+            let u = dir.appendingPathComponent(n)
+            return ext.isEmpty ? u : u.appendingPathExtension(ext)
+        }
+        var url = make(safe)
         var i = 2
         while FileManager.default.fileExists(atPath: url.path) {
-            url = dir.appendingPathComponent("\(safe)-\(i)").appendingPathExtension(ext)
+            url = make("\(safe) \(i)")
             i += 1
         }
         return url
@@ -64,10 +68,15 @@ final class Runner: ObservableObject {
     @Published var result: ToolResult?
     @Published var error: String?
 
-    func run(_ job: @escaping Job) {
+    /// Where delivered results ended up (nil while results are still in the temporary folder).
+    @Published var savedFolder: URL?
+
+    /// Runs `job` in the background. `source` is the main input file, used to save results next to it.
+    func run(_ job: @escaping Job, source: URL? = nil, label: String = "") {
         isRunning = true
         error = nil
         result = nil
+        savedFolder = nil
         status = "Working…"
         progress = nil
         let reporter = JobProgress(self)
@@ -75,7 +84,7 @@ final class Runner: ObservableObject {
             do {
                 let dir = try Workspace.newOutputDir()
                 let r = try await Task.detached(priority: .userInitiated) { try await job(dir, reporter) }.value
-                self.result = r
+                finish(r, source: source, label: label)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -83,7 +92,17 @@ final class Runner: ObservableObject {
         }
     }
 
-    func reset() { result = nil; error = nil }
+    /// Publishes a result, moving its files to the user's save location first.
+    func finish(_ r: ToolResult, source: URL?, label: String) {
+        var r = r
+        if let delivered = ResultSaver.deliver(r.files, source: source, label: label) {
+            r.files = delivered.files
+            savedFolder = delivered.folder
+        }
+        result = r
+    }
+
+    func reset() { result = nil; error = nil; savedFolder = nil }
 }
 
 // MARK: - Layout
@@ -208,13 +227,22 @@ struct FileRow: View {
     let url: URL
     var body: some View {
         HStack(spacing: 10) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: 28, height: 28)
+            if Self.previewable(url) {
+                PageThumb(url: url, maxSize: 120).frame(width: 36, height: 46)
+            } else {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable().frame(width: 36, height: 36)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 Text(url.lastPathComponent).lineLimit(1).truncationMode(.middle)
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
         }
     }
+    static func previewable(_ url: URL) -> Bool {
+        let t = UTType(filenameExtension: url.pathExtension) ?? .data
+        return t.conforms(to: .pdf) || t.conforms(to: .image)
+    }
+
     var detail: String {
         var s = PDFCore.byteString(PDFCore.fileSize(url))
         if url.pathExtension.lowercased() == "pdf", let d = PDFDocument(url: url) {
@@ -245,7 +273,7 @@ struct FileListView: View {
                 }
                 .onMove { from, to in if reorderable { files.move(fromOffsets: from, toOffset: to) } }
             }
-            .frame(height: min(CGFloat(max(files.count, 1)) * 46 + 12, 280))
+            .frame(height: min(CGFloat(max(files.count, 1)) * 58 + 12, 320))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             HStack {
                 if multiple {
@@ -299,9 +327,18 @@ struct ResultPanel: View {
                         }
                         Divider()
                         HStack {
-                            Button { ResultSaver.save(r.files) } label: { Label(r.files.count == 1 ? "Save…" : "Save All…", systemImage: "square.and.arrow.down") }
-                                .buttonStyle(.borderedProminent)
-                            Button { NSWorkspace.shared.activateFileViewerSelecting(r.files) } label: { Label("Show in Finder", systemImage: "folder") }
+                            if let folder = runner.savedFolder {
+                                Label("Saved to \(folder.lastPathComponent)", systemImage: "folder.fill").foregroundStyle(.secondary)
+                                    .help(folder.path)
+                                Spacer()
+                                Button { NSWorkspace.shared.activateFileViewerSelecting(r.files) } label: { Label("Show in Finder", systemImage: "folder") }
+                                    .buttonStyle(.borderedProminent)
+                                Button { ResultSaver.save(r.files) } label: { Label("Save a Copy…", systemImage: "square.and.arrow.down") }
+                            } else {
+                                Button { ResultSaver.save(r.files) } label: { Label(r.files.count == 1 ? "Save…" : "Save All…", systemImage: "square.and.arrow.down") }
+                                    .buttonStyle(.borderedProminent)
+                                Button { NSWorkspace.shared.activateFileViewerSelecting(r.files) } label: { Label("Show in Finder", systemImage: "folder") }
+                            }
                         }
                     }
                     .padding(8)
@@ -375,7 +412,7 @@ struct FileToolView<Options: View>: View {
                 if !(opts is EmptyView) { OptionsBox { opts } }
                 HStack {
                     Spacer()
-                    Button { runner.run(makeJob(files)) } label: {
+                    Button { runner.run(makeJob(files), source: files.first, label: tool.title) } label: {
                         Label(actionTitle, systemImage: "arrow.right.circle.fill").padding(.horizontal, 20).padding(.vertical, 4)
                     }
                     .buttonStyle(.borderedProminent).controlSize(.large)
@@ -387,6 +424,10 @@ struct FileToolView<Options: View>: View {
             }
         }
         .onChange(of: files) { runner.reset() }
+        .onAppear {
+            let waiting = FileInbox.shared.take(types)
+            if files.isEmpty, !waiting.isEmpty { files = multiple ? waiting : [waiting[0]] }
+        }
     }
 }
 

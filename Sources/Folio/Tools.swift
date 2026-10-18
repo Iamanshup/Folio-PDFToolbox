@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum ToolCategory: String, CaseIterable, Identifiable {
     case organize = "Organize PDF"
@@ -153,6 +154,26 @@ enum Tool: String, CaseIterable, Identifiable, Hashable {
         case .intelligence: return .pink
         }
     }
+
+    /// File types the tool takes as input.
+    var inputTypes: [UTType] {
+        switch self {
+        case .jpgToPDF: return UTType.imageTypes
+        case .wordToPDF: return UTType.wordTypes
+        case .pptToPDF: return UTType.pptTypes
+        case .excelToPDF: return UTType.excelTypes
+        case .htmlToPDF: return [.html]
+        case .scan: return UTType.imageTypes + [.pdf]
+        default: return [.pdf]
+        }
+    }
+
+    static func conforms(_ url: URL, to types: [UTType]) -> Bool {
+        let t = UTType(filenameExtension: url.pathExtension) ?? .data
+        return types.contains { t.conforms(to: $0) }
+    }
+
+    func accepts(_ urls: [URL]) -> Bool { !urls.isEmpty && urls.allSatisfy { Self.conforms($0, to: inputTypes) } }
 
     @MainActor @ViewBuilder var view: some View {
         switch self {

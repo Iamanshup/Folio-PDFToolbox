@@ -140,6 +140,7 @@ struct SummarizeTool: View {
             } else {
                 TextEditor(text: $pasted).font(.body).frame(minHeight: 180).border(Color.secondary.opacity(0.3))
             }
+            EmptyView().onAppear { if let f = FileInbox.shared.take([.pdf]).first { file = f; usePDF = true } }
             OptionsBox {
                 Picker("Length", selection: $length) { ForEach(Summarizer.Length.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 360)
                 Picker("Format", selection: $style) { ForEach(Summarizer.Style.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(maxWidth: 360)
@@ -232,6 +233,7 @@ struct TranslateTool: View {
             }
             ResultPanel(runner: runner)
         }
+        .onAppear { if let f = FileInbox.shared.take([.pdf]).first { file = f } }
         .task {
             let langs = await LanguageAvailability().supportedLanguages
             languages = langs.sorted { name($0) < name($1) }
@@ -281,7 +283,7 @@ struct TranslateTool: View {
             }
             let (u, layout, tgt) = (units, keepLayout, target)
             let result = try await Task.detached { try TranslationUnit.build(file, units: u, translations: out, layout: layout, language: tgt) }.value
-            runner.result = result
+            runner.finish(result, source: file, label: Tool.translate.title)
         } catch {
             runner.error = "Translation failed: \(error.localizedDescription)"
         }

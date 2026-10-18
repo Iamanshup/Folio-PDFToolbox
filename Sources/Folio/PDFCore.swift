@@ -238,7 +238,20 @@ enum PDFOps {
 
     static func split(_ url: URL, mode: SplitMode, ranges: String, every: Int, mergeOutput: Bool, out dir: URL) throws -> ToolResult {
         let doc = try PDFCore.open(url)
-        let n = doc.pageCount
+        let groups = try splitGroups(mode: mode, ranges: ranges, every: every, mergeOutput: mergeOutput, pageCount: doc.pageCount)
+        var files: [URL] = []
+        for g in groups {
+            let part = PDFCore.subset(doc, g)
+            let label = g.count == 1 ? "page-\(g[0] + 1)" : "pages-\(g.first! + 1)-\(g.last! + 1)"
+            let dest = Workspace.uniqueURL(in: dir, name: "\(url.baseName)_\(mergeOutput ? "extracted" : label)", ext: "pdf")
+            try PDFCore.write(part, to: dest)
+            files.append(dest)
+        }
+        return ToolResult(files: files, message: "Created \(files.count) PDF\(files.count == 1 ? "" : "s").")
+    }
+
+    /// Pages (zero-based) that go into each output file. Shared by the split job and its live preview.
+    static func splitGroups(mode: SplitMode, ranges: String, every: Int, mergeOutput: Bool, pageCount n: Int) throws -> [[Int]] {
         var groups: [[Int]]
         switch mode {
         case .customRanges: groups = try PDFCore.parseRanges(ranges, pageCount: n)
@@ -249,15 +262,7 @@ enum PDFOps {
         case .extractSelected: groups = try PDFCore.parseRanges(ranges, pageCount: n).flatMap { $0 }.map { [$0] }
         }
         if mergeOutput { groups = [groups.flatMap { $0 }] }
-        var files: [URL] = []
-        for g in groups {
-            let part = PDFCore.subset(doc, g)
-            let label = g.count == 1 ? "page-\(g[0] + 1)" : "pages-\(g.first! + 1)-\(g.last! + 1)"
-            let dest = Workspace.uniqueURL(in: dir, name: "\(url.baseName)_\(mergeOutput ? "extracted" : label)", ext: "pdf")
-            try PDFCore.write(part, to: dest)
-            files.append(dest)
-        }
-        return ToolResult(files: files, message: "Created \(files.count) PDF\(files.count == 1 ? "" : "s").")
+        return groups
     }
 
     static func rotate(_ urls: [URL], degrees: Int, ranges: String, out dir: URL) throws -> ToolResult {

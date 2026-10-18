@@ -8,9 +8,8 @@ import UniformTypeIdentifiers
 struct EditTool: View {
     var body: some View {
         EditorHost(tool: .edit, actionTitle: "Save PDF", editor: { model in
-            CanvasEditor(model: model, tools: [.select, .text, .image, .rect, .ellipse, .line, .ink, .highlight, .whiteout], toolbarExtra: {
-                Button { pickImage(model) } label: { Label("Insert Image…", systemImage: "photo.badge.plus") }
-            }, sidebarExtra: { EmptyView() })
+            CanvasEditor(model: model, tools: [.select, .text, .image, .rect, .ellipse, .line, .ink, .highlight, .whiteout],
+                         toolbarExtra: { EmptyView() }, sidebarExtra: { EmptyView() })
         }, makeJob: { model in
             let (items, doc, url) = (model.items, model.doc, model.url)
             return { dir, p in
@@ -19,12 +18,6 @@ struct EditTool: View {
                 return ToolResult(files: [dest])
             }
         })
-    }
-
-    @MainActor func pickImage(_ model: CanvasModel) {
-        guard let u = FilePicker.open(types: UTType.imageTypes, multiple: false)?.first, let img = NSImage(contentsOf: u) else { return }
-        model.pendingImage = img
-        model.tool = .image
     }
 }
 
@@ -521,13 +514,16 @@ struct CropTool: View {
             }
         } else {
             ToolPage(tool: .crop) {
-                DropZone(types: [.pdf], multiple: false, prompt: "Select a PDF to crop") { urls in
-                    if let d = PDFDocument(url: urls[0]), !d.isLocked { doc = d; url = urls[0]; page = 0; crop = nil }
-                    else { runner.error = "Couldn’t open that PDF (it may be locked — unlock it first)." }
-                }
+                DropZone(types: [.pdf], multiple: false, prompt: "Select a PDF to crop") { open($0[0]) }
                 ResultPanel(runner: runner)
             }
+            .onAppear { if let f = FileInbox.shared.take([.pdf]).first { open(f) } }
         }
+    }
+
+    private func open(_ u: URL) {
+        if let d = PDFDocument(url: u), !d.isLocked { doc = d; url = u; page = 0; crop = nil }
+        else { runner.error = "Couldn’t open that PDF (it may be locked — unlock it first)." }
     }
 
     private func margin(_ label: String, _ value: CGFloat, set: @escaping (CGFloat) -> Void) -> some View {
@@ -544,12 +540,12 @@ struct CropTool: View {
         let insets = NSEdgeInsets(top: rect.minY, left: rect.minX, bottom: size.height - rect.maxY, right: size.width - rect.maxX)
         let (all, current) = (allPages, page)
         let source = url
-        runner.run { dir, _ in
+        runner.run({ dir, _ in
             try PDFOps.crop(source, out: dir) { i, s in
                 guard all || i == current else { return nil }
                 return CGRect(x: insets.left, y: insets.top, width: s.width - insets.left - insets.right, height: s.height - insets.top - insets.bottom)
             }
-        }
+        }, source: source, label: Tool.crop.title)
     }
 }
 
@@ -567,6 +563,7 @@ struct OrgPage: Identifiable, Equatable {
 final class OrganizeModel: ObservableObject {
     @Published var docs: [PDFDocument] = []
     @Published var names: [String] = []
+    @Published var urls: [URL] = []
     @Published var pages: [OrgPage] = []
     @Published var selected: Set<UUID> = []
     private var thumbs: [String: NSImage] = [:]
@@ -575,7 +572,7 @@ final class OrganizeModel: ObservableObject {
         for u in urls {
             guard let d = PDFDocument(url: u) else { return "Couldn’t open \(u.lastPathComponent)." }
             if d.isLocked { return "“\(u.lastPathComponent)” is locked. Unlock it first." }
-            docs.append(d); names.append(u.lastPathComponent)
+            docs.append(d); names.append(u.lastPathComponent); self.urls.append(u)
             pages += (0..<d.pageCount).map { OrgPage(source: docs.count - 1, index: $0) }
         }
         return nil
@@ -642,6 +639,7 @@ struct OrganizeTool: View {
                 DropZone(types: [.pdf], prompt: "Select PDF files") { error = model.add($0) }
                 if let error { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red) }
             }
+            .onAppear { let f = FileInbox.shared.take([.pdf]); if !f.isEmpty { error = model.add(f) } }
         } else {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
@@ -662,7 +660,7 @@ struct OrganizeTool: View {
                         Button("Deselect All") { model.selected = [] }
                         Divider()
                         Button("Reverse Order") { model.pages.reverse() }
-                        Button("Start Over", role: .destructive) { model.pages = []; model.docs = []; model.names = []; model.selected = [] }
+                        Button("Start Over", role: .destructive) { model.pages = []; model.docs = []; model.names = []; model.urls = []; model.selected = [] }
                     } label: { Image(systemName: "ellipsis.circle") }.fixedSize()
                     Divider().frame(height: 20)
                     Button { save() } label: { Label("Save PDF", systemImage: "square.and.arrow.down.fill") }.buttonStyle(.borderedProminent).disabled(model.pages.isEmpty || runner.isRunning)
@@ -693,11 +691,11 @@ struct OrganizeTool: View {
     func save() {
         let doc = model.build()
         let name = (model.names.first.map { URL(fileURLWithPath: $0).baseName } ?? "document") + "_organized"
-        runner.run { dir, _ in
+        runner.run({ dir, _ in
             let dest = Workspace.uniqueURL(in: dir, name: name, ext: "pdf")
             try PDFCore.write(doc, to: dest)
             return ToolResult(files: [dest], message: "Saved \(doc.pageCount) pages.")
-        }
+        }, source: model.urls.first, label: Tool.organize.title)
     }
 }
 
@@ -797,6 +795,11 @@ struct CompareTool: View {
                 }
                 if visual { visualView(da, db) } else { textView }
             }
+        }
+        .onAppear {
+            let f = FileInbox.shared.take([.pdf])
+            if f.count >= 1 { a = f[0] }
+            if f.count >= 2 { b = f[1] }
         }
         .onChange(of: a) { rows = []; page = 0 }
         .onChange(of: b) { rows = []; page = 0 }
@@ -963,6 +966,7 @@ struct ScanTool: View {
             }
             ResultPanel(runner: runner)
         }
+        .onAppear { let f = FileInbox.shared.take(UTType.imageTypes + [.pdf]); if !f.isEmpty { importFiles(f) } }
         .sheet(isPresented: $showScanner) {
             VStack(spacing: 0) {
                 ScannerView { url in importFiles([url]) }.frame(width: 760, height: 560)
@@ -988,12 +992,12 @@ struct ScanTool: View {
 
     private func create() {
         let (imgs, f, o) = (pages.map(\.image), filter, ocr)
-        runner.run { dir, p in
+        runner.run({ dir, p in
             let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd HH.mm"
             let dest = Workspace.uniqueURL(in: dir, name: "Scan \(df.string(from: Date()))", ext: "pdf")
             try ScanProcessing.makePDF(imgs, filter: f, ocr: o, to: dest, progress: p)
             return ToolResult(files: [dest])
-        }
+        }, label: Tool.scan.title)
     }
 }
 

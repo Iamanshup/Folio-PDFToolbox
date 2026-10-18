@@ -293,6 +293,39 @@ enum SelfTest {
             check("translate: layout rebuild", text(r.files[0]).contains("QUICK BROWN FOX"))
         }
 
+        // UI logic -------------------------------------------------------------
+        await attempt("auto-save delivery") {
+            let defaults = UserDefaults.standard
+            let saved = defaults.string(forKey: Prefs.saveLocationKey)
+            defer { if let saved { defaults.set(saved, forKey: Prefs.saveLocationKey) } else { defaults.removeObject(forKey: Prefs.saveLocationKey) } }
+            defaults.set(SaveLocation.nextToOriginal.rawValue, forKey: Prefs.saveLocationKey)
+            let one = try PDFOps.rotate([sample], degrees: 90, ranges: "", out: try Workspace.newOutputDir())
+            let d1 = ResultSaver.deliver(one.files, source: sample, label: "Rotate PDF")
+            let landed = d1?.files.first
+            check("save: single file lands next to original", landed?.deletingLastPathComponent().resolvingSymlinksInPath().path == dir.resolvingSymlinksInPath().path
+                  && FileManager.default.fileExists(atPath: landed?.path ?? ""), landed?.path ?? "nil")
+            let many = try ImageConvert.pdfToImages([sample, sample], format: .png, dpi: 30, quality: 1, out: try Workspace.newOutputDir(), progress: progress)
+            let d2 = ResultSaver.deliver(many.files, source: sample, label: "PDF to JPG")
+            check("save: many files go into their own folder", d2.map { $0.folder.lastPathComponent == "sample – PDF to JPG" && $0.files.count == 2 * n } ?? false,
+                  d2?.folder.lastPathComponent ?? "nil")
+            defaults.set(SaveLocation.ask.rawValue, forKey: Prefs.saveLocationKey)
+            check("save: 'ask each time' leaves files in place", ResultSaver.deliver(one.files, source: sample, label: "") == nil)
+        }
+        let model = CanvasModel(doc: PDFDocument(url: sample)!, url: sample)
+        model.add(CanvasItem(page: 0, kind: .rect, rect: CGRect(x: 10, y: 10, width: 50, height: 50)))
+        model.beginGesture()
+        for dx in stride(from: 1, through: 30, by: 1) { model.nudgeSelection(dx: 1, dy: 0); _ = dx }
+        model.endGesture()
+        check("undo: drag is one step", model.items[0].rect.minX == 40)
+        model.undo()
+        check("undo: restores position", model.items.count == 1 && model.items[0].rect.minX == 10)
+        model.undo()
+        check("undo: removes added item", model.items.isEmpty && !model.canUndo)
+        model.redo(); model.redo()
+        check("redo: reapplies both steps", model.items.count == 1 && model.items[0].rect.minX == 40 && !model.canRedo)
+        let groups = try? PDFOps.splitGroups(mode: .customRanges, ranges: "1, 2-3", every: 1, mergeOutput: false, pageCount: 3)
+        check("split preview groups", groups == [[0], [1, 2]])
+
         print(failures == 0 ? "\nALL CHECKS PASSED" : "\n\(failures) CHECK(S) FAILED")
         return failures == 0
     }
